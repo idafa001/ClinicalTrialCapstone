@@ -1,0 +1,10 @@
+# Ignore local PostgreSQL database files
+pgdata/
+
+# Ignore Python environment caches
+__pycache__/
+*.pyc
+
+# Ignore operating system hidden files
+.DS_Store
+Thumbs.db
