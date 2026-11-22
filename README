@@ -1,5 +1,80 @@
-Title: Clinical Trial Internship Capstone Project
-Author: Islam Dafaalla
-Date: October 3, 2026
+# Protocol HEM-2026 Clinical Trial Tracker
 
-Description:
+University capstone rough draft by Islam Dafaalla. This project uses synthetic data only and is not a clinical system.
+
+## What is included
+
+- PostgreSQL schema for one study, multiple sites, subjects, scheduled visits, adverse events, deviations, quality findings, and audit history.
+- Seeded synthetic-data generator for repeatable demo records.
+- Python data-quality checks for missing baseline ANC, missed visits, and visits outside the protocol window.
+- pandas CSV summaries and matplotlib charts for enrollment over time, deviations by type and site, and screen-fail reasons.
+- Database triggers that record inserts, updates, and deletes on study tables and reject ordinary updates or deletes to the audit trail.
+
+The visit schedule uses screening day 0, baseline day 14, follow-up day 42, and final day 84. The synthetic generator deliberately creates some missing ANC results, missed visits, and out-of-window visits so the quality checks have findings to report.
+
+## Requirements
+
+- Docker Desktop with Docker Compose
+- Python 3.10 or newer on Windows
+- Windows Command Prompt (CMD)
+
+## Run from CMD
+
+Run these commands from the project directory.
+
+1. Create a local environment file and set a strong local password. Never commit `.env`.
+
+```cmd
+copy .env.example .env
+notepad .env
+```
+
+Use the same password for `POSTGRES_PASSWORD` and `PGPASSWORD` in `.env`. The `.env` file is ignored by Git. If a database password was previously committed to the public repository, rotate it and do not reuse it.
+
+2. Start PostgreSQL and wait for it to become healthy.
+
+```cmd
+docker compose up -d
+docker compose ps
+```
+
+3. Apply the schema once to a new, empty database.
+
+```cmd
+docker compose exec -T clinical_db psql -U trial_admin -d hematology_trial -v ON_ERROR_STOP=1 < schema.sql
+```
+
+If you changed the database user or name in `.env`, use those values in the `psql` command. Do not rerun the schema against an already initialized database; its table and trigger definitions are intentionally not destructive or silently replaced.
+
+4. Install Python packages and generate synthetic data.
+
+```cmd
+py -m venv .venv
+.venv\Scripts\activate
+py -m pip install -r requirements.txt
+py generator.py --seed 2026 --subjects 120 --as-of 2026-10-08
+```
+
+The seed and `--as-of` date make the generated clinical values and dates repeatable. Use a different seed to add a separate synthetic study. The same seed is rejected if its study is already in the database.
+
+5. Run quality checks and produce report files.
+
+```cmd
+py pipeline.py
+```
+
+The `reports` directory contains CSV findings and summaries plus PNG charts. The pipeline also saves each quality-check finding in `dq_findings` with a run ID.
+
+## Useful checks
+
+```cmd
+docker compose exec -T clinical_db psql -U trial_admin -d hematology_trial -c "\dt"
+docker compose exec -T clinical_db psql -U trial_admin -d hematology_trial -c "SELECT target_table, action_type, COUNT(*) FROM audit_trail GROUP BY 1, 2 ORDER BY 1, 2;"
+```
+
+## Draft limitations
+
+- All records are invented and must remain synthetic; do not import real patient records.
+- Visit timing and clinical values are simplified for demonstrating database and data-quality concepts, not for treatment decisions or protocol operations.
+- The audit trail is protected against ordinary `UPDATE` and `DELETE` statements by a trigger. A database owner can still alter schema or disable triggers; production systems require separate roles, permissions, backup, and compliance review.
+- The example stores one baseline ANC value per subject and one scheduled visit of each type. A real protocol may require cycle-level visits, repeated labs, treatment exposure, and controlled terminology tables.

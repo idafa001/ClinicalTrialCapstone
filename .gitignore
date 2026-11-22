@@ -8,3 +8,11 @@ __pycache__/
 # Ignore operating system hidden files
 .DS_Store
 Thumbs.db
+
+# Local secrets
+.env
+.venv/
+.vscode/
+
+# Python report outputs can be regenerated
+reports/

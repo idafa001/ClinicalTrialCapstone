@@ -1,3 +1,5 @@
+BEGIN;
+
 CREATE TABLE study (
     study_id TEXT PRIMARY KEY,
     study_name TEXT NOT NULL UNIQUE,
@@ -10,41 +12,213 @@ CREATE TABLE study (
 CREATE TABLE sites (
     site_id TEXT PRIMARY KEY,
     study_id TEXT NOT NULL REFERENCES study(study_id),
-    site_name TEXT NOT NULL UNIQUE,
-    site_region VARCHAR(100) NOT NULL,
-    site_pi TEXT NOT NULL
+    site_name TEXT NOT NULL,
+    site_region TEXT NOT NULL,
+    site_pi TEXT NOT NULL,
+    UNIQUE (study_id, site_name)
 );
 
-CREATE TABLE patients(
-    patient_id INTEGER PRIMARY KEY NOT NULL,
+CREATE TABLE patients (
+    subj_id TEXT PRIMARY KEY,
     site_id TEXT NOT NULL REFERENCES sites(site_id),
-    first_name TEXT NOT NULL,
-    last_name TEXT NOT NULL,
-    age INTEGER NOT NULL CHECK (age >= 0),
-    sex Char(1) NOT NULL
-    current_conditions TEXT,
-    meds TEXT,
-    allergies TEXT,
-    enrollment_status TEXT NOT NULL CHECK (enrollment_status IN ('Enrolled', 'Withdrawn', 'Completed'))
+    screening_age INTEGER NOT NULL CHECK (screening_age BETWEEN 18 AND 75),
+    sex CHAR(1) NOT NULL CHECK (sex IN ('M', 'F', 'U')),
+    baseline_anc NUMERIC(6, 2) CHECK (baseline_anc IS NULL OR baseline_anc >= 0),
+    screening_date DATE NOT NULL,
+    enrollment_date DATE,
+    screen_fail_reason TEXT,
+    enrollment_status TEXT NOT NULL CHECK (
+        enrollment_status IN ('SCREENING', 'ENROLLED', 'SCREEN_FAIL', 'WITHDRAWN', 'COMPLETED')
+    ),
+    CHECK (enrollment_date IS NULL OR enrollment_date >= screening_date),
+    CHECK (
+        (enrollment_status IN ('ENROLLED', 'WITHDRAWN', 'COMPLETED') AND enrollment_date IS NOT NULL)
+        OR (enrollment_status IN ('SCREENING', 'SCREEN_FAIL') AND enrollment_date IS NULL)
+    ),
+    CHECK (
+        (enrollment_status = 'SCREEN_FAIL' AND NULLIF(BTRIM(screen_fail_reason), '') IS NOT NULL)
+        OR (enrollment_status <> 'SCREEN_FAIL' AND screen_fail_reason IS NULL)
+    )
 );
 
-CREATE TABLE visits(
-    visit_id INTEGER PRIMARY KEY NOT NULL,
-    patient_id INTEGER NOT NULL REFERENCES patients(patient_id),
-    visit_date DATE NOT NULL,
-    visit_type TEXT NOT NULL CHECK (visit_type IN ('Screening', 'Baseline', 'Follow-up', 'Final')),
-    visit_notes TEXT
+CREATE TABLE visit_schedule (
+    visit_type TEXT PRIMARY KEY,
+    target_day INTEGER NOT NULL CHECK (target_day >= 0),
+    window_before_days INTEGER NOT NULL CHECK (window_before_days >= 0),
+    window_after_days INTEGER NOT NULL CHECK (window_after_days >= 0)
 );
 
-CREATE TABLE adverse_events(
-    event_id INTEGER PRIMARY KEY NOT NULL,
-    patient_id INTEGER NOT NULL REFERENCES patients(patient_id),
-    event_date DATE NOT NULL,
-    event_type TEXT NOT NULL CHECK (event_type IN ('Mild', 'Moderate', 'Severe')),
-    event_description TEXT NOT NULL
-    ctcae_grade INTEGER NOT NULL CHECK (ctcae_grade BETWEEN 1 AND 5)
+INSERT INTO visit_schedule (visit_type, target_day, window_before_days, window_after_days)
+VALUES
+    ('Screening', 0, 0, 0),
+    ('Baseline', 14, 3, 3),
+    ('Follow-up', 42, 7, 7),
+    ('Final', 84, 7, 7);
+
+CREATE TABLE visits (
+    visit_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    subj_id TEXT NOT NULL REFERENCES patients(subj_id),
+    visit_type TEXT NOT NULL REFERENCES visit_schedule(visit_type),
+    planned_visit DATE NOT NULL,
+    actual_visit DATE,
+    visit_notes TEXT,
+    UNIQUE (subj_id, visit_type)
 );
 
-CREATE TABLE deviations();
+CREATE TABLE adverse_events (
+    ae_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    subj_id TEXT NOT NULL REFERENCES patients(subj_id),
+    ae_start_date DATE NOT NULL,
+    ae_end_date DATE,
+    ae_description TEXT NOT NULL,
+    ctcae_grade INTEGER NOT NULL CHECK (ctcae_grade BETWEEN 1 AND 5),
+    ae_action_taken TEXT NOT NULL CHECK (
+        ae_action_taken IN ('None', 'Medication', 'Hospitalization', 'Other')
+    ),
+    ae_outcome TEXT NOT NULL CHECK (
+        ae_outcome IN ('Recovered', 'Recovering', 'Not Recovered', 'Fatal', 'Unknown')
+    ),
+    CHECK (ae_end_date IS NULL OR ae_end_date >= ae_start_date)
+);
 
-CREATE TABLE audit_trail();
+CREATE TABLE deviations (
+    dev_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    visit_id BIGINT NOT NULL REFERENCES visits(visit_id),
+    dev_date DATE NOT NULL,
+    dev_type TEXT NOT NULL CHECK (dev_type IN ('Protocol', 'Regulatory', 'Other')),
+    dev_description TEXT NOT NULL,
+    dev_severity TEXT NOT NULL CHECK (dev_severity IN ('Minor', 'Major', 'Critical'))
+);
+
+CREATE INDEX sites_study_idx ON sites (study_id);
+CREATE INDEX patients_site_idx ON patients (site_id);
+CREATE INDEX visits_subj_idx ON visits (subj_id);
+CREATE INDEX adverse_events_subj_idx ON adverse_events (subj_id);
+CREATE INDEX deviations_visit_idx ON deviations (visit_id);
+
+CREATE TABLE dq_findings (
+    finding_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id UUID NOT NULL,
+    rule_code TEXT NOT NULL,
+    target_table TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING', 'ERROR')),
+    finding_detail TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'RESOLVED')),
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMPTZ,
+    CHECK ((status = 'OPEN' AND resolved_at IS NULL) OR (status = 'RESOLVED' AND resolved_at IS NOT NULL))
+);
+
+CREATE TABLE audit_trail (
+    audit_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    subj_id TEXT REFERENCES patients(subj_id) ON DELETE SET NULL,
+    target_table TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    action_type TEXT NOT NULL CHECK (action_type IN ('INSERT', 'UPDATE', 'DELETE')),
+    column_name TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    changed_by TEXT NOT NULL DEFAULT CURRENT_USER,
+    change_timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reason_for_change TEXT
+);
+
+CREATE FUNCTION capture_audit_change() RETURNS TRIGGER AS $$
+DECLARE
+    old_row JSONB;
+    new_row JSONB;
+    current_row JSONB;
+    audit_subj_id TEXT;
+    record_key TEXT;
+    actor TEXT;
+    change_reason TEXT;
+    changed_column TEXT;
+BEGIN
+    actor := COALESCE(NULLIF(current_setting('app.changed_by', TRUE), ''), CURRENT_USER);
+    change_reason := NULLIF(current_setting('app.change_reason', TRUE), '');
+
+    IF TG_OP = 'INSERT' THEN
+        new_row := TO_JSONB(NEW);
+    ELSIF TG_OP = 'UPDATE' THEN
+        old_row := TO_JSONB(OLD);
+        new_row := TO_JSONB(NEW);
+    ELSE
+        old_row := TO_JSONB(OLD);
+    END IF;
+
+    current_row := CASE WHEN TG_OP = 'DELETE' THEN old_row ELSE new_row END;
+    -- Use each table's own primary key; a fixed COALESCE order would pick
+    -- foreign keys (e.g. study_id on sites, subj_id on visits) instead.
+    record_key := COALESCE(
+        current_row ->> CASE TG_TABLE_NAME
+            WHEN 'study' THEN 'study_id'
+            WHEN 'sites' THEN 'site_id'
+            WHEN 'patients' THEN 'subj_id'
+            WHEN 'visit_schedule' THEN 'visit_type'
+            WHEN 'visits' THEN 'visit_id'
+            WHEN 'adverse_events' THEN 'ae_id'
+            WHEN 'deviations' THEN 'dev_id'
+        END,
+        'unknown'
+    );
+    audit_subj_id := COALESCE(new_row ->> 'subj_id', old_row ->> 'subj_id');
+    IF TG_TABLE_NAME = 'patients' AND TG_OP = 'DELETE' THEN
+        audit_subj_id := NULL;
+    END IF;
+
+    IF TG_OP = 'UPDATE' THEN
+        FOR changed_column IN SELECT key FROM JSONB_EACH(new_row)
+        LOOP
+            IF old_row -> changed_column IS DISTINCT FROM new_row -> changed_column THEN
+                INSERT INTO audit_trail (
+                    subj_id, target_table, record_id, action_type, column_name,
+                    old_value, new_value, changed_by, reason_for_change
+                ) VALUES (
+                    audit_subj_id, TG_TABLE_NAME, record_key, TG_OP, changed_column,
+                    old_row ->> changed_column, new_row ->> changed_column, actor, change_reason
+                );
+            END IF;
+        END LOOP;
+    ELSE
+        INSERT INTO audit_trail (
+            subj_id, target_table, record_id, action_type, old_value, new_value,
+            changed_by, reason_for_change
+        ) VALUES (
+            audit_subj_id, TG_TABLE_NAME, record_key, TG_OP, old_row::TEXT, new_row::TEXT,
+            actor, change_reason
+        );
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION reject_audit_mutation() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'audit_trail is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER study_audit AFTER INSERT OR UPDATE OR DELETE ON study
+FOR EACH ROW EXECUTE FUNCTION capture_audit_change();
+CREATE TRIGGER sites_audit AFTER INSERT OR UPDATE OR DELETE ON sites
+FOR EACH ROW EXECUTE FUNCTION capture_audit_change();
+CREATE TRIGGER patients_audit AFTER INSERT OR UPDATE OR DELETE ON patients
+FOR EACH ROW EXECUTE FUNCTION capture_audit_change();
+CREATE TRIGGER visit_schedule_audit AFTER INSERT OR UPDATE OR DELETE ON visit_schedule
+FOR EACH ROW EXECUTE FUNCTION capture_audit_change();
+CREATE TRIGGER visits_audit AFTER INSERT OR UPDATE OR DELETE ON visits
+FOR EACH ROW EXECUTE FUNCTION capture_audit_change();
+CREATE TRIGGER adverse_events_audit AFTER INSERT OR UPDATE OR DELETE ON adverse_events
+FOR EACH ROW EXECUTE FUNCTION capture_audit_change();
+CREATE TRIGGER deviations_audit AFTER INSERT OR UPDATE OR DELETE ON deviations
+FOR EACH ROW EXECUTE FUNCTION capture_audit_change();
+
+CREATE TRIGGER audit_trail_append_only BEFORE UPDATE OR DELETE ON audit_trail
+FOR EACH ROW EXECUTE FUNCTION reject_audit_mutation();
+
+COMMIT;
