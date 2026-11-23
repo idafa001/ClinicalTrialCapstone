@@ -1,4 +1,4 @@
-"""Generate reproducible synthetic records for Protocol HEM-2026."""
+"""Generate reproducible synthetic records """
 
 import argparse
 import os
@@ -118,7 +118,7 @@ def main():
 						study_id,
 						f"Protocol HEM-2026 Synthetic Trial {args.seed}",
 						"Synthetic Sponsor",
-						"Phase 2",
+						"Phase 3",
 						enrolled_count,
 						"Dr. Jordan Lee",
 					),

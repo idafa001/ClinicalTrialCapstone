@@ -1,11 +1,14 @@
 # Protocol HEM-2026 Clinical Trial Tracker
+TITLE: CDS Internship Capstone Project - Rough Draft 
+AUTHOR: Islam Dafaalla
+DATE: 11/22/2026
 
-University capstone rough draft by Islam Dafaalla. This project uses synthetic data only and is not a clinical system.
+## Description
+A Capstone Project for a Clinical Data Science Internship modeling a demo trial tracker with generated synthetic data and reports. This a Phase 3 study testing a treament for Acute Myeloid Leukemia, an agressive blood cancer.
 
 ## What is included
-
-- PostgreSQL schema for one study, multiple sites, subjects, scheduled visits, adverse events, deviations, quality findings, and audit history.
-- Seeded synthetic-data generator for repeatable demo records.
+- PostgreSQL schema for a study with multiple sites, subjects, scheduled visits, adverse events, deviations, quality findings, and audit history
+- Seeded synthetic-data generator for repeatable demo records
 - Python data-quality checks for missing baseline ANC, missed visits, and visits outside the protocol window.
 - pandas CSV summaries and matplotlib charts for enrollment over time, deviations by type and site, and screen-fail reasons.
 - Database triggers that record inserts, updates, and deletes on study tables and reject ordinary updates or deletes to the audit trail.
