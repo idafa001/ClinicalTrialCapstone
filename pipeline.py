@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from uuid import uuid4
 
 import matplotlib
 
@@ -198,40 +197,15 @@ def make_reports(connection):
 
 def main():
 	connection = connect_database()
-	run_id = str(uuid4())
 	try:
 		findings = collect_findings(connection)
-		with connection:
-			with connection.cursor() as cursor:
-				cursor.execute(
-					"SELECT set_config('app.changed_by', %s, TRUE), "
-					"set_config('app.change_reason', %s, TRUE)",
-					("quality_pipeline", "Persisted automated data-quality findings"),
-				)
-				if not findings.empty:
-					cursor.executemany(
-						"INSERT INTO dq_findings "
-						"(run_id, rule_code, target_table, record_id, severity, finding_detail) "
-						"VALUES (%s, %s, %s, %s, %s, %s)",
-						[
-							(
-								run_id,
-								row.rule_code,
-								row.target_table,
-								row.record_id,
-								row.severity,
-								row.finding_detail,
-							)
-							for row in findings.itertuples(index=False)
-						],
-					)
 		REPORT_DIR.mkdir(exist_ok=True)
 		findings.to_csv(REPORT_DIR / "dq_findings.csv", index=False)
 		make_reports(connection)
 		with connection.cursor() as cursor:
 			cursor.execute("SELECT COUNT(*) FROM audit_trail")
 			audit_count = cursor.fetchone()[0]
-		print(f"Data-quality run {run_id}: {len(findings)} finding(s).")
+		print(f"Data-quality check: {len(findings)} finding(s).")
 		print(f"Append-only audit rows recorded: {audit_count}.")
 		print(f"CSV summaries and PNG charts saved in: {REPORT_DIR}")
 	finally:

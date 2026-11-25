@@ -7,7 +7,7 @@ DATE: 11/22/2026
 A Capstone Project for a Clinical Data Science Internship modeling a demo trial tracker with generated synthetic data and reports. This a Phase 3 study testing a treament for Acute Myeloid Leukemia, an agressive blood cancer.
 
 ## What is included
-- PostgreSQL schema for a study with multiple sites, subjects, scheduled visits, adverse events, deviations, quality findings, and audit history
+- PostgreSQL schema for a study with multiple sites, subjects, scheduled visits, adverse events, deviations, quality findings, and audit history. The study also uses randomization to reduce bias.
 - Seeded synthetic-data generator for repeatable demo records
 - Python data-quality checks for missing baseline ANC, missed visits, and visits outside the protocol window.
 - pandas CSV summaries and matplotlib charts for enrollment over time, deviations by type and site, and screen-fail reasons.
@@ -66,7 +66,7 @@ The seed and `--as-of` date make the generated clinical values and dates repeata
 py pipeline.py
 ```
 
-The `reports` directory contains CSV findings and summaries plus PNG charts. The pipeline also saves each quality-check finding in `dq_findings` with a run ID.
+The `reports` directory contains CSV findings and summaries plus PNG charts.
 
 ## Useful checks
 

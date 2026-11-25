@@ -1,48 +1,39 @@
 BEGIN;
 
+
 CREATE TABLE study (
-    study_id TEXT PRIMARY KEY,
-    study_name TEXT NOT NULL UNIQUE,
+    study_id VARCHAR(20) PRIMARY KEY,
+    study_name TEXT NOT NULL,
     sponsor TEXT NOT NULL,
     phase TEXT NOT NULL CHECK (phase IN ('Phase 1', 'Phase 2', 'Phase 3', 'Phase 4')),
-    enrollment INTEGER NOT NULL CHECK (enrollment >= 0),
+    enrollment INTEGER NOT NULL,
     p_i TEXT NOT NULL
 );
 
 CREATE TABLE sites (
-    site_id TEXT PRIMARY KEY,
-    study_id TEXT NOT NULL REFERENCES study(study_id),
+    site_id VARCHAR(20) PRIMARY KEY,
+    study_id VARCHAR(20) NOT NULL REFERENCES study(study_id),
     site_name TEXT NOT NULL,
     site_region TEXT NOT NULL,
-    site_pi TEXT NOT NULL,
-    UNIQUE (study_id, site_name)
+    site_pi TEXT NOT NULL
 );
 
 CREATE TABLE patients (
-    subj_id TEXT PRIMARY KEY,
-    site_id TEXT NOT NULL REFERENCES sites(site_id),
-    screening_age INTEGER NOT NULL CHECK (screening_age BETWEEN 18 AND 75),
+    subj_id VARCHAR(20) PRIMARY KEY,
+    site_id VARCHAR(20) NOT NULL REFERENCES sites(site_id),
+    age INTEGER NOT NULL CHECK (screening_age BETWEEN 18 AND 75),
     sex CHAR(1) NOT NULL CHECK (sex IN ('M', 'F', 'U')),
-    baseline_anc NUMERIC(6, 2) CHECK (baseline_anc IS NULL OR baseline_anc >= 0),
     screening_date DATE NOT NULL,
-    enrollment_date DATE,
-    screen_fail_reason TEXT,
+    ecog_status INTEGER NOT NULL CHECK (ecog_status BETWEEN 0 AND 4),
     enrollment_status TEXT NOT NULL CHECK (
         enrollment_status IN ('SCREENING', 'ENROLLED', 'SCREEN_FAIL', 'WITHDRAWN', 'COMPLETED')
     ),
-    CHECK (enrollment_date IS NULL OR enrollment_date >= screening_date),
-    CHECK (
-        (enrollment_status IN ('ENROLLED', 'WITHDRAWN', 'COMPLETED') AND enrollment_date IS NOT NULL)
-        OR (enrollment_status IN ('SCREENING', 'SCREEN_FAIL') AND enrollment_date IS NULL)
-    ),
-    CHECK (
-        (enrollment_status = 'SCREEN_FAIL' AND NULLIF(BTRIM(screen_fail_reason), '') IS NOT NULL)
-        OR (enrollment_status <> 'SCREEN_FAIL' AND screen_fail_reason IS NULL)
-    )
+    enrollment_date DATE
 );
 
+-- Protocol schedule: one row per visit type. target_day is an offset from the patient's screening_date (day 0), not a calendar date.
 CREATE TABLE visit_schedule (
-    visit_type TEXT PRIMARY KEY,
+    visit_type TEXT PRIMARY KEY CHECK (visit_type IN ('Screening', 'Baseline', 'Follow-up', 'Final')),
     target_day INTEGER NOT NULL CHECK (target_day >= 0),
     window_before_days INTEGER NOT NULL CHECK (window_before_days >= 0),
     window_after_days INTEGER NOT NULL CHECK (window_after_days >= 0)
@@ -55,9 +46,12 @@ VALUES
     ('Follow-up', 42, 7, 7),
     ('Final', 84, 7, 7);
 
+-- Planned_visit = patients.screening_date + visit_schedule.target_day, based on visit type
+-- actual_visit stays NULL until the visit happens.
+
 CREATE TABLE visits (
-    visit_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    subj_id TEXT NOT NULL REFERENCES patients(subj_id),
+    visit_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    subj_id VARCHAR(20) NOT NULL REFERENCES patients(subj_id),
     visit_type TEXT NOT NULL REFERENCES visit_schedule(visit_type),
     planned_visit DATE NOT NULL,
     actual_visit DATE,
@@ -65,63 +59,54 @@ CREATE TABLE visits (
     UNIQUE (subj_id, visit_type)
 );
 
-CREATE TABLE adverse_events (
-    ae_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    subj_id TEXT NOT NULL REFERENCES patients(subj_id),
-    ae_start_date DATE NOT NULL,
-    ae_end_date DATE,
-    ae_description TEXT NOT NULL,
-    ctcae_grade INTEGER NOT NULL CHECK (ctcae_grade BETWEEN 1 AND 5),
-    ae_action_taken TEXT NOT NULL CHECK (
-        ae_action_taken IN ('None', 'Medication', 'Hospitalization', 'Other')
-    ),
-    ae_outcome TEXT NOT NULL CHECK (
-        ae_outcome IN ('Recovered', 'Recovering', 'Not Recovered', 'Fatal', 'Unknown')
-    ),
-    CHECK (ae_end_date IS NULL OR ae_end_date >= ae_start_date)
+CREATE TABLE lab_results (
+    lab_id  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    visit_id INTEGER NOT NULL REFERENCES visits(visit_id),
+    test_name TEXT NOT NULL,
+    result TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    reference_range TEXT
 );
 
+CREATE TABLE adverse_events (
+    ae_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    subj_id VARCHAR(20) NOT NULL REFERENCES patients(subj_id),
+    start_date DATE NOT NULL,
+    end_date DATE,
+    ctcae_grade INTEGER NOT NULL CHECK (ctcae_grade BETWEEN 1 AND 5),
+    action_taken TEXT NOT NULL CHECK (
+        action_taken IN ('None', 'Medication', 'Hospitalization', 'Other')
+    ),
+    outcome TEXT NOT NULL CHECK (
+        outcome IN ('Recovered', 'Recovering', 'Not Recovered', 'Fatal', 'Unknown')
+    ),
+    CHECK (end_date IS NULL OR end_date >= start_date)
+);
 CREATE TABLE deviations (
-    dev_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    visit_id BIGINT NOT NULL REFERENCES visits(visit_id),
+    dev_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    visit_id INTEGER NOT NULL REFERENCES visits(visit_id),
     dev_date DATE NOT NULL,
     dev_type TEXT NOT NULL CHECK (dev_type IN ('Protocol', 'Regulatory', 'Other')),
-    dev_description TEXT NOT NULL,
-    dev_severity TEXT NOT NULL CHECK (dev_severity IN ('Minor', 'Major', 'Critical'))
+    dev_severity TEXT NOT NULL CHECK (dev_severity IN ('Minor', 'Major', 'Critical')),
+    dev_notes TEXT
 );
 
 CREATE INDEX sites_study_idx ON sites (study_id);
 CREATE INDEX patients_site_idx ON patients (site_id);
-CREATE INDEX visits_subj_idx ON visits (subj_id);
 CREATE INDEX adverse_events_subj_idx ON adverse_events (subj_id);
 CREATE INDEX deviations_visit_idx ON deviations (visit_id);
 
-CREATE TABLE dq_findings (
-    finding_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    run_id UUID NOT NULL,
-    rule_code TEXT NOT NULL,
-    target_table TEXT NOT NULL,
-    record_id TEXT NOT NULL,
-    severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING', 'ERROR')),
-    finding_detail TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'RESOLVED')),
-    detected_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMPTZ,
-    CHECK ((status = 'OPEN' AND resolved_at IS NULL) OR (status = 'RESOLVED' AND resolved_at IS NOT NULL))
-);
-
 CREATE TABLE audit_trail (
     audit_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    subj_id TEXT REFERENCES patients(subj_id) ON DELETE SET NULL,
+    subj_id Varchar(20) REFERENCES patients(subj_id) ON DELETE SET NULL,
     target_table TEXT NOT NULL,
     record_id TEXT NOT NULL,
     action_type TEXT NOT NULL CHECK (action_type IN ('INSERT', 'UPDATE', 'DELETE')),
-    column_name TEXT,
-    old_value TEXT,
-    new_value TEXT,
+    old_val TEXT,
+    new_val TEXT,
     changed_by TEXT NOT NULL DEFAULT CURRENT_USER,
-    change_timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    reason_for_change TEXT
+    time_stamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reason_for_change TEXT NOT NULL
 );
 
 CREATE FUNCTION capture_audit_change() RETURNS TRIGGER AS $$
